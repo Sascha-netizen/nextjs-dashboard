@@ -32,9 +32,7 @@ export async function createInvoice(formData: FormData) {
     `;
     } catch (error) {
       console.log(error);
-      return {
-        message: 'Database Error: Failed to Create Invoice.',
-      };
+        throw new Error('Database Error: Failed to Create Invoice.')
     }
     revalidatePath('/dashboard/invoices');
     redirect('/dashboard/invoices');
@@ -62,9 +60,7 @@ export async function updateInvoice(id: string, formData: FormData) {
   `;
   } catch (error) {
     console.log(error);
-    return{
-      message: 'Database Error: Failed to Update Invoice.'
-    };
+      throw new Error('Database Error: Failed to Update Invoice.')
   }
   revalidatePath('/dashboard/invoices');
   redirect('/dashboard/invoices');
