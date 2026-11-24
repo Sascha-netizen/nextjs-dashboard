@@ -5,6 +5,10 @@ import { redirect } from 'next/navigation';
 import postgres from 'postgres';
 import { signIn } from '@/auth';
 import { AuthError } from 'next-auth'; 
+import { randomUUID } from 'crypto';
+import { PutObjectCommand } from '@aws-sdk/client-s3';
+import { s3, BUCKET } from '@/app/lib/s3';
+
 
 const sql = postgres(process.env.POSTGRES_URL!, { ssl: 'require'});
 
@@ -126,4 +130,95 @@ export async function authenticate(
     }
     throw error;
   }
+}
+
+// ---------- Customers ----------
+
+const DEFAULT_AVATAR = '/customers/default.png';
+const MAX_AVATAR_BYTES = 1024 * 1024; // 1 MB
+const ALLOWED_TYPES: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+};
+
+const CustomerFormSchema = z.object({
+  id: z.string(),
+  name: z.string().trim().min(1, { message: 'Please enter a name.' }),
+  email: z.string().trim().email({ message: 'Please enter a valid email address.' }),
+});
+
+const CreateCustomer = CustomerFormSchema.omit({ id: true });
+
+export type CustomerState = {
+  errors?: {
+    name?: string[];
+    email?: string[];
+    image?: string[];
+  };
+  message?: string | null;
+};
+
+export async function createCustomer(prevState: CustomerState, formData: FormData): Promise<CustomerState> {
+  const validatedFields = CreateCustomer.safeParse({
+    name: formData.get('name'),
+    email: formData.get('email'),
+  });
+
+  if (!validatedFields.success) {
+    return {
+      errors: validatedFields.error.flatten().fieldErrors,
+      message: 'Missing or invalid fields. Failed to create customer.',
+    };
+  }
+
+  const { name, email } = validatedFields.data;
+
+  let imageUrl = DEFAULT_AVATAR;
+  const file = formData.get('image');
+
+  if (file instanceof File && file.size > 0) {
+    const extension = ALLOWED_TYPES[file.type];
+    if (!extension) {
+      return {
+        errors: { image: ['Please upload a PNG, JPEG or WebP image.'] },
+        message: 'Failed to create customer.',
+      };
+    }
+    if (file.size > MAX_AVATAR_BYTES) {
+      return {
+        errors: { image: ['The image must be smaller than 1 MB.'] },
+        message: 'Failed to create customer.',
+      };
+    }
+
+    const key = `${randomUUID()}.${extension}`;
+    try {
+      await s3.send(
+        new PutObjectCommand({
+          Bucket: BUCKET,
+          Key: key,
+          Body: Buffer.from(await file.arrayBuffer()),
+          ContentType: file.type,
+        }),
+      );
+    } catch (error) {
+      console.log(error);
+      return { message: 'Upload failed. Please try again.' };
+    }
+    imageUrl = `/api/avatars/${key}`;
+  }
+
+  try {
+    await sql`
+      INSERT INTO customers (name, email, image_url)
+      VALUES (${name}, ${email}, ${imageUrl})
+    `;
+  } catch (error) {
+    console.log(error);
+    return { message: 'Database error: failed to create customer.' };
+  }
+
+  revalidatePath('/dashboard/customers');
+  redirect('/dashboard/customers');
 }
